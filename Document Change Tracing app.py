@@ -5,7 +5,7 @@ from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from io import BytesIO
 
-st.title("Amendment History Extractor (Multi-Document)")
+st.title("Amendment History Extractor")
 
 # -------- File Upload --------
 uploaded_files = st.file_uploader(
@@ -14,13 +14,12 @@ uploaded_files = st.file_uploader(
 
 if uploaded_files:
     all_rows = []
-    excel_headers = None  # Will set header from first document
 
     for file in uploaded_files:
         doc = docx.Document(file)
         document_name = file.name
 
-        # Find the table with 'Amendment History' in first row or any cell
+        # Find the table with 'Amendment History' in the first row or first cell
         amendment_table = None
         for table in doc.tables:
             first_row_text = " ".join([cell.text.strip() for cell in table.rows[0].cells])
@@ -32,18 +31,19 @@ if uploaded_files:
             st.warning(f"No Amendment History table found in {document_name}")
             continue
 
-        # Extract header once from first document only
-        if excel_headers is None:
-            excel_headers = ["Document Name"] + [cell.text.strip() for cell in amendment_table.rows[0].cells]
-
-        # Extract data rows only (skip header row)
+        # Extract rows
+        header = [cell.text.strip() for cell in amendment_table.rows[0].cells]
         for row in amendment_table.rows[1:]:
             row_data = [cell.text.strip() for cell in row.cells]
             all_rows.append([document_name] + row_data)
 
     if all_rows:
+        # Determine final headers
+        excel_headers = ["Document Name"] + header
+
         # Create DataFrame
         df = pd.DataFrame(all_rows, columns=excel_headers)
+
         st.dataframe(df, use_container_width=True)
 
         # -------- Excel Export --------
@@ -51,12 +51,13 @@ if uploaded_files:
         ws = wb.active
         ws.append(df.columns.tolist())
 
-        # Append all rows
         for r_idx, row in enumerate(all_rows, start=2):
             for c_idx, value in enumerate(row, start=1):
                 ws.cell(row=r_idx, column=c_idx, value=value)
 
-        # Merge document name column per document
+        # Optional: merge cells in first column for same document
+        from openpyxl.utils import range_boundaries
+
         current_doc = None
         start_row = 2
         for r_idx, row in enumerate(all_rows, start=2):
@@ -80,9 +81,7 @@ if uploaded_files:
         wb.save(buffer)
 
         st.download_button(
-            "Download Combined Amendment History Excel",
+            "Download Amendment History Excel",
             buffer.getvalue(),
             "Amendment_History.xlsx"
         )
-    else:
-        st.info("No Amendment History data found in uploaded documents.")
