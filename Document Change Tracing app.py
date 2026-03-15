@@ -8,49 +8,49 @@ from openpyxl.styles import Font
 from io import BytesIO
 
 st.set_page_config(page_title="Clause Change Log Tool", layout="wide")
-st.title("📄 Clause Change Log Generator")
+st.title("📄 Clause Change Log Generator – Full Clause + Highlights")
 
 # -----------------------------
-# Extract clauses from Word doc
+# Extract clauses including multi-line content
 # -----------------------------
 def extract_clauses(file):
     doc = docx.Document(file)
     clauses = {}
     pattern = r'(\d+\.\d+(\.\d+)*)'
+    current_clause = None
+    current_text = []
 
-    # Paragraphs
-    for para in doc.paragraphs:
-        text = para.text.strip()
+    # Combine paragraphs and tables
+    for block in doc.paragraphs + [cell for table in doc.tables for row in table.rows for cell in row.cells]:
+        text = block.text.strip()
         if not text:
             continue
-        match = re.search(pattern, text)
+        match = re.match(pattern, text)
         if match:
-            clause_no = match.group(1)
-            clauses[clause_no] = text
-
-    # Tables
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                text = cell.text.strip()
-                if not text:
-                    continue
-                match = re.search(pattern, text)
-                if match:
-                    clause_no = match.group(1)
-                    clauses[clause_no] = text
-
+            # Save previous clause
+            if current_clause:
+                clauses[current_clause] = "\n".join(current_text).strip()
+            # Start new clause
+            current_clause = match.group(1)
+            current_text = [text]
+        else:
+            if current_clause:
+                current_text.append(text)
+    # Save last clause
+    if current_clause:
+        clauses[current_clause] = "\n".join(current_text).strip()
     return clauses
 
 # -----------------------------
 # Word-level diff for modified clauses
 # -----------------------------
 def build_diff(before, after):
+    # Remove clause number prefix for clarity
     before_clean = re.sub(r'^\d+(\.\d+)*\s*', '', before)
     after_clean = re.sub(r'^\d+(\.\d+)*\s*', '', after)
+
     before_words = before_clean.split()
     after_words = after_clean.split()
-
     diff = list(difflib.ndiff(before_words, after_words))
     result = []
 
@@ -61,11 +61,10 @@ def build_diff(before, after):
             result.append(("removed", d[2:]))
         elif d.startswith("  "):
             result.append(("same", d[2:]))
-
     return result
 
 # -----------------------------
-# File upload
+# File Upload
 # -----------------------------
 before_file = st.file_uploader("Upload BEFORE Document", type=["docx"])
 after_file = st.file_uploader("Upload AFTER Document", type=["docx"])
@@ -84,12 +83,12 @@ if before_file and after_file:
         if clause in before_clauses and clause not in after_clauses:
             status = "Removed"
             rtype = "removed"
-            rcontent = re.sub(r'^\d+(\.\d+)*\s*', '', before_text)
+            rcontent = before_text
 
         elif clause not in before_clauses and clause in after_clauses:
             status = "New Clause Added"
             rtype = "added"
-            rcontent = re.sub(r'^\d+(\.\d+)*\s*', '', after_text)
+            rcontent = after_text
 
         elif before_text != after_text:
             status = "Statement Modified / Revised"
@@ -108,7 +107,7 @@ if before_file and after_file:
         ])
 
     # -----------------------------
-    # Build DataFrame
+    # Build DataFrame with SR #
     # -----------------------------
     df = pd.DataFrame(results, columns=[
         "Document Name",
@@ -118,29 +117,27 @@ if before_file and after_file:
         "Remark Type",
         "Remarks Content"
     ])
-
-    # Add SR # starting from 1
     df.reset_index(inplace=True)
     df.rename(columns={'index':'SR #'}, inplace=True)
     df['SR #'] = df['SR #'] + 1
 
-    # Prepare Remarks column for preview
+    # Format Remarks for Streamlit preview
     def format_remarks(row):
         rtype = row['Remark Type']
         content = row['Remarks Content']
-        if rtype == "removed" or rtype == "added":
+        if rtype in ["removed", "added"]:
             return content
         elif rtype == "modified":
-            return " ".join([w for t, w in content])
+            # show added/removed words inline
+            return " ".join([w if t=="same" else w for t,w in content])
         return content
 
     df['Remarks'] = df.apply(format_remarks, axis=1)
-
     st.subheader("📊 Change Log Preview")
     st.dataframe(df[['SR #','Document Name','Before Clause','After Clause','Status','Remarks']], use_container_width=True)
 
     # -----------------------------
-    # Excel export
+    # Create Excel with color
     # -----------------------------
     wb = Workbook()
     ws = wb.active
@@ -163,7 +160,6 @@ if before_file and after_file:
             remarks_cell.value = rcontent
             remarks_cell.font = green
         elif rtype == "modified":
-            # Show word-level diff as plain text with blue color for simplicity
             remarks_cell.value = " ".join([w for t,w in rcontent])
             remarks_cell.font = blue
 
