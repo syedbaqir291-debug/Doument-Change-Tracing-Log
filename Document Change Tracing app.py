@@ -1,115 +1,87 @@
 import streamlit as st
 import pandas as pd
 import docx
-import re
 from openpyxl import Workbook
-from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from io import BytesIO
 
-st.title("Clause Change Log Generator (OMAC Developers)")
-
-# -------- Clause Extraction --------
-def extract_clauses(file):
-    doc = docx.Document(file)
-    clauses = {}
-    pattern = r'(\d+\.\d+(\.\d+)*)'
-
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        match = re.search(pattern, text)
-        if match:
-            clause_no = match.group(1)
-            clauses[clause_no] = text
-
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                text = cell.text.strip()
-                match = re.search(pattern, text)
-                if match:
-                    clause_no = match.group(1)
-                    clauses[clause_no] = text
-    return clauses
+st.title("Amendment History Extractor")
 
 # -------- File Upload --------
-before_file = st.file_uploader("Upload BEFORE Document", type=["docx"])
-after_file = st.file_uploader("Upload AFTER Document", type=["docx"])
+uploaded_files = st.file_uploader(
+    "Upload Word Documents", type=["docx"], accept_multiple_files=True
+)
 
-if before_file and after_file:
+if uploaded_files:
+    all_rows = []
 
-    before = extract_clauses(before_file)
-    after = extract_clauses(after_file)
+    for file in uploaded_files:
+        doc = docx.Document(file)
+        document_name = file.name
 
-    document_name = after_file.name
-    all_clauses = set(before.keys()).union(set(after.keys()))
-    rows = []
+        # Find the table with 'Amendment History' in the first row or first cell
+        amendment_table = None
+        for table in doc.tables:
+            first_row_text = " ".join([cell.text.strip() for cell in table.rows[0].cells])
+            if "Amendment History" in first_row_text or "Amendment" in first_row_text:
+                amendment_table = table
+                break
 
-    for clause in sorted(all_clauses):
-        before_text = before.get(clause, "")
-        after_text = after.get(clause, "")
-
-        if clause in before and clause not in after:
-            status = "Removed"
-            remarks = before_text
-        elif clause not in before and clause in after:
-            status = "New Clause Added"
-            remarks = after_text
-        elif before_text != after_text:
-            status = "Statement Modified / Revised"
-            remarks = after_text  # Just paste the new clause
-        else:
+        if not amendment_table:
+            st.warning(f"No Amendment History table found in {document_name}")
             continue
 
-        rows.append([
-            document_name,
-            before_text,
-            after_text,
-            status,
-            remarks
-        ])
+        # Extract rows
+        header = [cell.text.strip() for cell in amendment_table.rows[0].cells]
+        for row in amendment_table.rows[1:]:
+            row_data = [cell.text.strip() for cell in row.cells]
+            all_rows.append([document_name] + row_data)
 
-    df = pd.DataFrame(rows, columns=[
-        "Document Name",
-        "Before Clause",
-        "After Clause",
-        "Status",
-        "Remarks"
-    ])
+    if all_rows:
+        # Determine final headers
+        excel_headers = ["Document Name"] + header
 
-    st.dataframe(df, use_container_width=True)
+        # Create DataFrame
+        df = pd.DataFrame(all_rows, columns=excel_headers)
 
-    # -------- Excel Export --------
-    wb = Workbook()
-    ws = wb.active
-    ws.append(df.columns.tolist())
+        st.dataframe(df, use_container_width=True)
 
-    # Define colors
-    red = Font(color="FF0000")
-    green = Font(color="008000")
-    blue = Font(color="0000FF")
+        # -------- Excel Export --------
+        wb = Workbook()
+        ws = wb.active
+        ws.append(df.columns.tolist())
 
-    for r_idx, row in enumerate(rows, start=2):
-        for c_idx, value in enumerate(row, start=1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=value)
-            if c_idx == 5:  # Remarks column
-                status = row[3]
-                if status == "Removed":
-                    cell.font = red
-                elif status == "New Clause Added":
-                    cell.font = green
-                elif status == "Statement Modified / Revised":
-                    cell.font = blue
+        for r_idx, row in enumerate(all_rows, start=2):
+            for c_idx, value in enumerate(row, start=1):
+                ws.cell(row=r_idx, column=c_idx, value=value)
 
-    # Optional: adjust column width
-    for i, col in enumerate(df.columns, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = 60
+        # Optional: merge cells in first column for same document
+        from openpyxl.utils import range_boundaries
 
-    buffer = BytesIO()
-    wb.save(buffer)
+        current_doc = None
+        start_row = 2
+        for r_idx, row in enumerate(all_rows, start=2):
+            doc_name = row[0]
+            if doc_name != current_doc:
+                # Merge previous doc rows
+                if current_doc is not None and r_idx - start_row > 1:
+                    ws.merge_cells(start_row=start_row, start_column=1, end_row=r_idx-1, end_column=1)
+                current_doc = doc_name
+                start_row = r_idx
+        # Merge last document
+        if current_doc is not None and r_idx - start_row >= 1:
+            ws.merge_cells(start_row=start_row, start_column=1, end_row=r_idx, end_column=1)
 
-    st.download_button(
-        "Download Excel Change Log",
-        buffer.getvalue(),
-        "Clause_Change_Log.xlsx"
-    )
+        # Adjust column widths
+        for i, col in enumerate(df.columns, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = 30
+
+        # Save Excel to buffer
+        buffer = BytesIO()
+        wb.save(buffer)
+
+        st.download_button(
+            "Download Amendment History Excel",
+            buffer.getvalue(),
+            "Amendment_History.xlsx"
+        )
