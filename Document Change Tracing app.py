@@ -20,23 +20,40 @@ def extract_clauses(file):
     current_clause = None
     current_text = []
 
-    # Combine paragraphs and tables
-    for block in doc.paragraphs + [cell for table in doc.tables for row in table.rows for cell in row.cells]:
-        text = block.text.strip()
+    # Process paragraphs
+    for para in doc.paragraphs:
+        text = para.text.strip()
         if not text:
             continue
         match = re.match(pattern, text)
         if match:
-            # Save previous clause
+            # save previous clause
             if current_clause:
                 clauses[current_clause] = "\n".join(current_text).strip()
-            # Start new clause
+            # start new clause
             current_clause = match.group(1)
             current_text = [text]
         else:
             if current_clause:
                 current_text.append(text)
-    # Save last clause
+    # Process tables
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                text = cell.text.strip()
+                if not text:
+                    continue
+                match = re.match(pattern, text)
+                if match:
+                    if current_clause:
+                        clauses[current_clause] = "\n".join(current_text).strip()
+                    current_clause = match.group(1)
+                    current_text = [text]
+                else:
+                    if current_clause:
+                        current_text.append(text)
+
+    # save last clause
     if current_clause:
         clauses[current_clause] = "\n".join(current_text).strip()
     return clauses
@@ -45,7 +62,6 @@ def extract_clauses(file):
 # Word-level diff for modified clauses
 # -----------------------------
 def build_diff(before, after):
-    # Remove clause number prefix for clarity
     before_clean = re.sub(r'^\d+(\.\d+)*\s*', '', before)
     after_clean = re.sub(r'^\d+(\.\d+)*\s*', '', after)
 
@@ -128,8 +144,7 @@ if before_file and after_file:
         if rtype in ["removed", "added"]:
             return content
         elif rtype == "modified":
-            # show added/removed words inline
-            return " ".join([w if t=="same" else w for t,w in content])
+            return " ".join([w for t, w in content])
         return content
 
     df['Remarks'] = df.apply(format_remarks, axis=1)
