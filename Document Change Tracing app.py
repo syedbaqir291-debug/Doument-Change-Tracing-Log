@@ -7,31 +7,73 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from io import BytesIO
 
-st.title("Clause Change Log Generator – Reliable Version")
+st.set_page_config(page_title="Clause Change Log Tool", layout="wide")
+st.title("📄 Clause Change Log Generator – Full Clause + Highlights")
 
 # -----------------------------
-# Extract clauses from Word (working method)
+# Extract clauses from Word (paragraphs + tables)
 # -----------------------------
 def extract_clauses(file):
     doc = docx.Document(file)
     clauses = {}
-    pattern = r'(\d+\.\d+(\.\d+)*)'
+    pattern = r'(\d+(\.\d+)+)'  # flexible clause number pattern
+    current_clause = None
+    current_text = []
+
+    # Process paragraphs
     for para in doc.paragraphs:
         text = para.text.strip()
         if not text:
             continue
         match = re.search(pattern, text)
         if match:
-            clause_no = match.group(1)
-            clauses[clause_no] = text
+            # Save previous clause
+            if current_clause:
+                clauses[current_clause] = "\n".join(current_text).strip()
+            current_clause = match.group(1)
+            current_text = [text]
+        else:
+            if current_clause:
+                current_text.append(text)
+
+    # Process tables
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                text = cell.text.strip()
+                if not text:
+                    continue
+                match = re.search(pattern, text)
+                if match:
+                    if current_clause:
+                        clauses[current_clause] = "\n".join(current_text).strip()
+                    current_clause = match.group(1)
+                    current_text = [text]
+                else:
+                    if current_clause:
+                        current_text.append(text)
+
+    # Save last clause
+    if current_clause:
+        clauses[current_clause] = "\n".join(current_text).strip()
     return clauses
 
+# -----------------------------
 # Word-level diff for modified clauses
+# -----------------------------
 def build_diff(before, after):
     before_words = before.split()
     after_words = after.split()
     diff = list(difflib.ndiff(before_words, after_words))
-    return [(d[0], d[2:]) for d in diff if d[0] in ("+","-"," ")]
+    result = []
+    for d in diff:
+        if d.startswith("+ "):
+            result.append(("added", d[2:]))
+        elif d.startswith("- "):
+            result.append(("removed", d[2:]))
+        elif d.startswith("  "):
+            result.append(("same", d[2:]))
+    return result
 
 # -----------------------------
 # File Upload
@@ -51,14 +93,17 @@ if before_file and after_file:
         after_text = after_clauses.get(clause, "")
 
         if clause in before_clauses and clause not in after_clauses:
+            # Removed clause
             status = "Removed"
             rtype = "removed"
             rcontent = before_text
         elif clause not in before_clauses and clause in after_clauses:
+            # New clause
             status = "New Clause Added"
             rtype = "added"
             rcontent = after_text
         elif before_text != after_text:
+            # Modified / Amended clause
             status = "Statement Modified / Revised"
             rtype = "modified"
             rcontent = build_diff(before_text, after_text)
@@ -67,23 +112,34 @@ if before_file and after_file:
 
         results.append([document_name, before_text, after_text, status, rtype, rcontent])
 
-    df = pd.DataFrame(results, columns=["Document Name","Before Clause","After Clause","Status","Remark Type","Remarks Content"])
+    # -----------------------------
+    # Build DataFrame with SR #
+    # -----------------------------
+    df = pd.DataFrame(results, columns=[
+        "Document Name","Before Clause","After Clause","Status","Remark Type","Remarks Content"
+    ])
     df.reset_index(inplace=True)
     df.rename(columns={'index':'SR #'}, inplace=True)
     df['SR #'] = df['SR #'] + 1
 
-    # Remarks column for preview
+    # Prepare Remarks for Streamlit preview
     def format_remarks(row):
-        if row['Remark Type'] in ["added","removed"]:
-            return row['Remarks Content']
-        elif row['Remark Type']=="modified":
-            return " ".join([w for t,w in row['Remarks Content']])
+        rtype = row['Remark Type']
+        content = row['Remarks Content']
+        if rtype in ["removed","added"]:
+            return content
+        elif rtype=="modified":
+            return " ".join([w for t,w in content])
         return ""
 
     df['Remarks'] = df.apply(format_remarks, axis=1)
+
+    st.subheader("📊 Change Log Preview")
     st.dataframe(df[['SR #','Document Name','Before Clause','After Clause','Status','Remarks']], use_container_width=True)
 
-    # Excel export
+    # -----------------------------
+    # Excel Export with colors
+    # -----------------------------
     wb = Workbook()
     ws = wb.active
     ws.title = "Change Log"
@@ -95,17 +151,25 @@ if before_file and after_file:
     for idx, row in df.iterrows():
         sr, docname, before_c, after_c, status, rtype, rcontent, remarks = row
         ws.append([sr, docname, before_c, after_c, status, ""])
-        cell = ws.cell(row=ws.max_row, column=6)
+        remarks_cell = ws.cell(row=ws.max_row, column=6)
         if rtype=="removed":
-            cell.value = rcontent
-            cell.font = red
+            remarks_cell.value = rcontent
+            remarks_cell.font = red
         elif rtype=="added":
-            cell.value = rcontent
-            cell.font = green
+            remarks_cell.value = rcontent
+            remarks_cell.font = green
         elif rtype=="modified":
-            cell.value = " ".join([w for t,w in rcontent])
-            cell.font = blue
+            remarks_cell.value = " ".join([w for t,w in rcontent])
+            remarks_cell.font = blue
 
+    # -----------------------------
+    # Download button
+    # -----------------------------
     buffer = BytesIO()
     wb.save(buffer)
-    st.download_button("Download Excel", data=buffer.getvalue(), file_name="Clause_Log.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button(
+        label="📥 Download Excel Change Log",
+        data=buffer.getvalue(),
+        file_name="Clause_Change_Log.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
