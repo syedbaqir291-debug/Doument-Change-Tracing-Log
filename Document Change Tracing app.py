@@ -7,27 +7,26 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from io import BytesIO
 
-st.set_page_config(page_title="Document Clause Comparison Tool", layout="wide")
+st.set_page_config(page_title="Clause Change Log Generator", layout="wide")
 
-st.title("📄 Clause Change Log Generator")
+st.title("📄 Document Clause Change Log Generator")
 
 
 # -----------------------------
-# Function: Extract Clauses
+# Extract Clauses
 # -----------------------------
 def extract_clauses(file):
 
-    document = docx.Document(file)
+    doc = docx.Document(file)
     clauses = {}
 
     pattern = r'(\d+\.\d+(\.\d+)*)'
 
-    # Read normal paragraphs
-    for para in document.paragraphs:
+    for para in doc.paragraphs:
 
         text = para.text.strip()
 
-        if text == "":
+        if not text:
             continue
 
         match = re.search(pattern, text)
@@ -36,14 +35,14 @@ def extract_clauses(file):
             clause_no = match.group(1)
             clauses[clause_no] = text
 
-    # Read tables
-    for table in document.tables:
+    # detect clauses in tables
+    for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
 
                 text = cell.text.strip()
 
-                if text == "":
+                if not text:
                     continue
 
                 match = re.search(pattern, text)
@@ -56,47 +55,41 @@ def extract_clauses(file):
 
 
 # -----------------------------
-# Function: Detect Differences
+# Word Level Difference
 # -----------------------------
-def find_changes(before, after):
+def build_diff(before, after):
 
-    before_words = before.split()
-    after_words = after.split()
+    before_clean = re.sub(r'^\d+(\.\d+)*\s*', '', before)
+    after_clean = re.sub(r'^\d+(\.\d+)*\s*', '', after)
 
-    diff = difflib.ndiff(before_words, after_words)
+    before_words = before_clean.split()
+    after_words = after_clean.split()
 
-    added = []
-    removed = []
+    diff = list(difflib.ndiff(before_words, after_words))
 
-    for word in diff:
+    result = []
 
-        if word.startswith("+ "):
-            added.append(word[2:])
+    for d in diff:
 
-        elif word.startswith("- "):
-            removed.append(word[2:])
+        if d.startswith("+ "):
+            result.append(("added", d[2:]))
 
-    result = ""
+        elif d.startswith("- "):
+            result.append(("removed", d[2:]))
 
-    if added:
-        result += "Added: " + " ".join(added)
-
-    if removed:
-        result += " | Removed: " + " ".join(removed)
+        elif d.startswith("  "):
+            result.append(("same", d[2:]))
 
     return result
 
 
 # -----------------------------
-# File Upload
+# Upload Files
 # -----------------------------
 before_file = st.file_uploader("Upload BEFORE Document", type=["docx"])
 after_file = st.file_uploader("Upload AFTER Document", type=["docx"])
 
 
-# -----------------------------
-# Comparison Logic
-# -----------------------------
 if before_file and after_file:
 
     before_clauses = extract_clauses(before_file)
@@ -116,17 +109,20 @@ if before_file and after_file:
         if clause in before_clauses and clause not in after_clauses:
 
             status = "Removed"
-            remarks = before_text
+            remarks_type = "removed"
+            remarks_content = before_text
 
         elif clause not in before_clauses and clause in after_clauses:
 
             status = "New Clause Added"
-            remarks = after_text
+            remarks_type = "added"
+            remarks_content = after_text
 
         elif before_text != after_text:
 
             status = "Statement Modified / Revised"
-            remarks = find_changes(before_text, after_text)
+            remarks_type = "modified"
+            remarks_content = build_diff(before_text, after_text)
 
         else:
             continue
@@ -136,56 +132,81 @@ if before_file and after_file:
             before_text,
             after_text,
             status,
-            remarks
+            remarks_type,
+            remarks_content
         ])
 
+    df = pd.DataFrame(results, columns=[
+        "Document Name",
+        "Before Clause",
+        "After Clause",
+        "Status",
+        "Remark Type",
+        "Remarks Content"
+    ])
 
-# -----------------------------
-# Create DataFrame
-# -----------------------------
-    df = pd.DataFrame(
-        results,
-        columns=[
-            "Document Name",
-            "Before Clause",
-            "After Clause",
-            "Status",
-            "Remarks"
-        ]
-    )
+    st.subheader("Preview Change Log")
 
-    st.subheader("📊 Change Log Preview")
-    st.dataframe(df, use_container_width=True)
+    preview = df.drop(columns=["Remark Type", "Remarks Content"])
+    st.dataframe(preview, use_container_width=True)
 
 
 # -----------------------------
-# Create Excel File
+# Create Excel
 # -----------------------------
     wb = Workbook()
     ws = wb.active
     ws.title = "Change Log"
 
-    ws.append(df.columns.tolist())
+    headers = [
+        "Document Name",
+        "Before Clause",
+        "After Clause",
+        "Status",
+        "Remarks"
+    ]
 
-    red = Font(color="FF0000")
+    ws.append(headers)
+
+    red = Font(color="FF0000", strike=True)
     green = Font(color="008000")
     blue = Font(color="0000FF")
 
     for row in results:
 
-        ws.append(row)
+        docname, before_c, after_c, status, rtype, rcontent = row
 
-        status = row[3]
+        ws.append([docname, before_c, after_c, status, ""])
 
         remarks_cell = ws.cell(row=ws.max_row, column=5)
 
-        if status == "Removed":
+        if rtype == "removed":
+
+            remarks_cell.value = re.sub(r'^\d+(\.\d+)*\s*', '', rcontent)
             remarks_cell.font = red
 
-        elif status == "New Clause Added":
+        elif rtype == "added":
+
+            remarks_cell.value = re.sub(r'^\d+(\.\d+)*\s*', '', rcontent)
             remarks_cell.font = green
 
-        elif status == "Statement Modified / Revised":
+        elif rtype == "modified":
+
+            remarks_text = ""
+
+            for t, word in rcontent:
+
+                if t == "same":
+                    remarks_text += word + " "
+
+                elif t == "added":
+                    remarks_text += word + " "
+
+                elif t == "removed":
+                    remarks_text += word + " "
+
+            remarks_cell.value = remarks_text.strip()
+
             remarks_cell.font = blue
 
 
