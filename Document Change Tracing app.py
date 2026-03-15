@@ -2,14 +2,12 @@ import streamlit as st
 import pandas as pd
 import docx
 import re
-import difflib
 from openpyxl import Workbook
 from openpyxl.styles import Font
-from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 from io import BytesIO
 
-st.title("Clause Change Log Generator")
+st.title("Clause Change Log Generator (OMAC Developers)")
 
 # -------- Clause Extraction --------
 def extract_clauses(file):
@@ -34,28 +32,7 @@ def extract_clauses(file):
                     clauses[clause_no] = text
     return clauses
 
-# -------- Word-level diff for modified clauses --------
-def generate_diff_html(before, after):
-    """
-    Returns a string where removed words are marked with ~~ and red,
-    added words are green.
-    """
-    diff = difflib.ndiff(before.split(), after.split())
-    result = []
-
-    for token in diff:
-        if token.startswith('- '):
-            # Removed word: red and strike-through
-            result.append(f"{token[2:]}")
-        elif token.startswith('+ '):
-            # Added word: green
-            result.append(f"{token[2:]}")
-        else:
-            # Unchanged
-            result.append(token[2:] if token.startswith('  ') else token)
-    return " ".join(result)
-
-# -------- Streamlit File Upload --------
+# -------- File Upload --------
 before_file = st.file_uploader("Upload BEFORE Document", type=["docx"])
 after_file = st.file_uploader("Upload AFTER Document", type=["docx"])
 
@@ -80,7 +57,7 @@ if before_file and after_file:
             remarks = after_text
         elif before_text != after_text:
             status = "Statement Modified / Revised"
-            remarks = generate_diff_html(before_text, after_text)
+            remarks = after_text  # Just paste the new clause
         else:
             continue
 
@@ -107,6 +84,7 @@ if before_file and after_file:
     ws = wb.active
     ws.append(df.columns.tolist())
 
+    # Define colors
     red = Font(color="FF0000")
     green = Font(color="008000")
     blue = Font(color="0000FF")
@@ -114,21 +92,18 @@ if before_file and after_file:
     for r_idx, row in enumerate(rows, start=2):
         for c_idx, value in enumerate(row, start=1):
             cell = ws.cell(row=r_idx, column=c_idx, value=value)
-
-            # Apply coloring in Remarks column
-            if c_idx == 5:
+            if c_idx == 5:  # Remarks column
                 status = row[3]
                 if status == "Removed":
                     cell.font = red
                 elif status == "New Clause Added":
                     cell.font = green
                 elif status == "Statement Modified / Revised":
-                    # For simplicity: make whole cell blue
                     cell.font = blue
 
     # Optional: adjust column width
     for i, col in enumerate(df.columns, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = 50
+        ws.column_dimensions[get_column_letter(i)].width = 60
 
     buffer = BytesIO()
     wb.save(buffer)
